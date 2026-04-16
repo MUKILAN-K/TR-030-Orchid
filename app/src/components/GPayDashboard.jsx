@@ -205,20 +205,42 @@ export default function GPayDashboard({ user, onLogout }) {
             }
         } catch(e) { console.warn("Network Analytics Failed", e); }
 
-        // 3. HUGGING FACE ML (Cost: FREE)
+        // 3. GEMINI LLM AGENT EVALUATOR (Cost: FREE)
         let mlScore = 0;
         let mlExplanation = "Normal profile.";
         let rawMlType = "SAFE";
         try {
-            const hfResponse = await axios.post('https://mukilan-k-orhcid-fraud-detection-model.hf.space/api/predict', {
-                data: [numAmount, new Date().getHours(), "UPI", "Mobile", numAmount % 10 === 0, "Low Frequency"]
-            });
-            const jsonResult = hfResponse.data.data[0];
-            mlScore = parseFloat(jsonResult["Fraud Score"]);
-            rawMlType = jsonResult["Predicted Type"];
-            mlExplanation = hfResponse.data.data[1];
+            const prompt = `You are an elite bank fraud security analyst algorithm. 
+Synthesize this live transaction telemetry and return ONLY a raw JSON object. Do NOT use markdown blocks or backticks.
+
+TELEMETRY DATA:
+- Sender Email: ${user.email}
+- Transfer Amount: ₹${numAmount}
+- Current Local Time: ${new Date().toLocaleTimeString()}
+- Network Intelligence Risk Score: ${pScore}% Risk
+- VPN/Proxy Masking Detected: ${isVPN}
+- Cryptographic Device Hash: ${visitorId}
+
+Is this transaction highly suspicious, an anomaly, or completely safe?
+Respond strictly in this formatting:
+{"fraud_score": (float between 0.0 and 1.0, where > 0.8 is guaranteed frozen), "predicted_type": "(Choose ONE: SAFE, BEHAVIORAL_ABUSE, NETWORK_ANOMALY, UNUSUAL_AMOUNT, OR LAUNDERING)", "explanation": "(Write a very strict, 1-2 sentence professional explanation diagnosing exactly what triggered the score or why it's safe. Address the admin directly.)"}`;
+
+            const geminiResponse = await axios.post(
+                \`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=\${import.meta.env.VITE_GEMINI_API_KEY}\`,
+                { contents: [{ parts: [{ text: prompt }] }] },
+                { headers: { 'Content-Type': 'application/json' } }
+            );
+
+            // Strip out any unexpected LLM Markdown formatting
+            let rawText = geminiResponse.data.candidates[0].content.parts[0].text;
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            const aiData = JSON.parse(rawText);
+
+            mlScore = parseFloat(aiData.fraud_score);
+            rawMlType = aiData.predicted_type;
+            mlExplanation = aiData.explanation;
         } catch (e) {
-            console.warn("ML Engine Fallback", e);
+            console.warn("Gemini Engine Fallback", e);
             if (numAmount >= 8000) {
                mlScore = 0.95;
                rawMlType = "BEHAVIORAL_ABUSE";
