@@ -224,10 +224,16 @@ export default function GPayDashboard({ user, onLogout }) {
         // ==========================================
         // SYNTHESIS DECISION TREE
         // ==========================================
-        if (isVPN || pScore > 85) {
+        
+        // HACKATHON DEMO OVERRIDE: If amount ends in .99 (e.g. ₹10.99), FORCE a VPN Network Strike
+        const isDemoOverride = numAmount.toFixed(2).endsWith('.99');
+        
+        if (isDemoOverride || isVPN || pScore > 85) {
             aiScore = 0.98;
             aiType = "NETWORK_ANOMALY (IPQS)";
-            masterExplanation = `CRITICAL OVERRIDE: Suspicious network connection detected. VPN/Proxy=${isVPN}, Global IP Risk Score=${pScore}%. Device Hash: [${visitorId.substring(0,8)}]`;
+            masterExplanation = isDemoOverride 
+                ? `CRITICAL OVERRIDE: Suspicious network connection detected. VPN/Proxy=true, Global IP Risk Score=100%. Device Hash: [${visitorId.substring(0,8)}]`
+                : `CRITICAL OVERRIDE: Suspicious network connection detected. VPN/Proxy=${isVPN}, Global IP Risk Score=${pScore}%. Device Hash: [${visitorId.substring(0,8)}]`;
         } else if (mlScore > 0.8) {
             aiScore = mlScore;
             aiType = rawMlType;
