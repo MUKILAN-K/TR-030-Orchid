@@ -1,136 +1,87 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+# backend/app.py
 import gradio as gr
-import numpy as np
-import os
-import torch
-from pytorch_tabnet.tab_model import TabNetClassifier
-import warnings
+from transformers import pipeline
 
-warnings.filterwarnings("ignore")
+# Load Pre-Trained Zero-Shot Model (Downloads automatically on first run)
+classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
-app = FastAPI(title="FraudGuard AI Predictor API")
-
-# --- ML Model Loading ---
-# Adjust path to find the model locally or when flattened on HF Space
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-potential_paths = [
-    os.path.join(BASE_DIR, '..', 'models', 'tabnet_model.zip'), # Local setup
-    os.path.join(BASE_DIR, 'models', 'tabnet_model.zip'),       # Alternative HF structure
-    os.path.join(BASE_DIR, 'tabnet_model.zip')                  # Flat HF structure
+# Define our 6 Fraud Types + Legitimate
+CANDIDATE_LABELS = [
+    "legitimate transaction",
+    "stolen card usage",
+    "account takeover",
+    "fake merchant scam",
+    "money laundering pattern",
+    "identity fraud",
+    "behavioral abuse"
 ]
 
-MODEL_PATH = None
-for p in potential_paths:
-    if os.path.exists(p):
-        MODEL_PATH = p
-        break
-
-clf = None
-if MODEL_PATH:
-    try:
-        clf = TabNetClassifier()
-        clf.load_model(MODEL_PATH)
-        print(f"✅ Model Loaded Successfully from {MODEL_PATH}")
-    except Exception as e:
-        print(f"❌ Failed to load model from {MODEL_PATH}. Error: {e}")
-else:
-    print(f"❌ Could not locate tabnet_model.zip in any expected paths.")
-
-# --- API Definitions ---
-class TransactionRequest(BaseModel):
-    TransactionAmt: float
-    hour: int
-    is_night: int
-    is_round_amount: int
-
-def predict_fraud(features_json: dict) -> dict:
-    if clf is None:
-        raise HTTPException(status_code=500, detail="Model is not loaded.")
-        
-    try:
-        # Map the simple JSON dictionary to a 17-dimensional numpy array 
-        # that matches the TabNet model's expected training structure.
-        X = np.zeros((1, 17))
-        
-        amt = features_json.get('TransactionAmt', 0.0)
-        hr = features_json.get('hour', 12)
-        night = features_json.get('is_night', 0)
-        round_amt = features_json.get('is_round_amount', 0)
-        
-        # 1. Log Amount (Index 0)
-        X[0][0] = np.log1p(amt)
-        # 2. Transaction Hour (Index 3)
-        X[0][3] = hr
-        # 3. IsNightTransaction (Index 5)
-        X[0][5] = night
-        # 4. IsRoundAmount (Index 6)
-        X[0][6] = round_amt
-        # Note: All other 13 features remain 0 (default) for this demo inference
-        
-        # Make Prediction
-        probas = clf.predict_proba(X)[0]
-        fraud_score = float(probas[1])
-        
-        # Determine Fraud Type
-        ftype = "legitimate"
-        if fraud_score > 0.7:
-            if round_amt == 1: 
-                ftype = "fake_merchant"
-            elif night == 1: 
-                ftype = "stolen_card"
-            else: 
-                ftype = "behavioral_abuse"
-                
-        return {
-            "fraud_score": fraud_score,
-            "fraud_type": ftype
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
-
-@app.post("/predict")
-async def api_predict(req: TransactionRequest):
-    return predict_fraud(req.model_dump())
-
-# --- Gradio UI ---
-def generate_gradio_output(amt, hr, night):
-    feature_dict = {
-        "TransactionAmt": amt,
-        "hour": hr,
-        "is_night": 1 if night else 0,
-        "is_round_amount": 1 if amt % 10 == 0 else 0
+def predict_fraud(amount, hour, email_domain, device, is_round, merchant_freq):
+    """
+    Converts transaction details into a natural language description
+    and uses Zero-Shot AI to classify it.
+    """
+    
+    # 1. Create a natural language description of the transaction
+    time_desc = "at night" if (hour < 6 or hour > 22) else "during the day"
+    email_desc = "using a suspicious anonymous email" if email_domain in ["ProtonMail", "TempMail"] else "using a standard email"
+    device_desc = f"on a {device} device"
+    freq_desc = "with high frequency" if merchant_freq == "High Frequency" else "with low frequency"
+    round_desc = "The amount is a round number." if is_round else ""
+    
+    prompt = f"A transaction of ${amount} occurred {time_desc} {email_desc} {device_desc} {freq_desc}. {round_desc}"
+    
+    # 2. Run Zero-Shot Classification
+    result = classifier(prompt, CANDIDATE_LABELS, multi_label=False)
+    
+    # 3. Extract Best Match
+    best_label = result['labels'][0]
+    score = result['scores'][0]
+    
+    # Map label to clean type name
+    type_map = {
+        "legitimate transaction": "LEGITIMATE",
+        "stolen card usage": "STOLEN_CARD",
+        "account takeover": "ACCOUNT_TAKEOVER",
+        "fake merchant scam": "FAKE_MERCHANT",
+        "money laundering pattern": "MONEY_LAUNDERING",
+        "identity fraud": "IDENTITY_FRAUD",
+        "behavioral abuse": "BEHAVIORAL_ABUSE"
     }
     
-    try:
-        result = predict_fraud(feature_dict)
-        return result
-    except Exception as e:
-        return {"error": str(e)}
+    fraud_type = type_map.get(best_label, "UNKNOWN")
+    
+    # 4. Format Output
+    json_output = {
+        "Fraud Score": f"{score:.2f}",
+        "Risk Level": "🟢 LOW" if score < 0.5 else "🟡 MEDIUM" if score < 0.8 else "🔴 HIGH",
+        "Predicted Type": fraud_type
+    }
+    
+    explanation = f"AI analyzed the pattern: '{prompt}' and classified it as {fraud_type.replace('_', ' ').title()} with {score:.0%} confidence."
+    
+    return json_output, explanation
 
-with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🛡️ FraudGuard AI Predictor")
-    gr.Markdown("Test the underlying TabNet model directly.")
+# --- GRADIO UI ---
+with gr.Blocks() as demo:
+    gr.Markdown("# 🛡️ FraudGuard AI - Zero-Shot Detector")
+    #gr.Markdown("Uses pre-trained BART model to detect fraud without training.")
     
     with gr.Row():
-        with gr.Column(scale=1):
-            amt_input = gr.Number(label="Transaction Amount ($)", value=250.0)
-            hr_input = gr.Dropdown(choices=list(range(24)), label="Transaction Hour (0-23)", value=14)
-            night_input = gr.Checkbox(label="Is Night Transaction? (Between 10PM - 6AM)", value=False)
-            btn = gr.Button("Analyze Transaction", variant="primary")
+        with gr.Column():
+            inp_amount = gr.Number(label="Amount ($)", value=100)
+            inp_hour = gr.Slider(0, 23, step=1, label="Hour", value=12)
+            inp_email = gr.Dropdown(["Gmail", "ProtonMail", "TempMail"], label="Email", value="Gmail")
+            inp_device = gr.Dropdown(["Windows", "Android", "iOS"], label="Device", value="Windows")
+            inp_round = gr.Checkbox(label="Is Round Amount?", value=False)
+            inp_freq = gr.Radio(["Low Frequency", "High Frequency"], label="Freq", value="Low Frequency")
+            btn = gr.Button("Analyze", variant="primary")
             
-        with gr.Column(scale=1):
-            json_output = gr.JSON(label="API Output Response")
-            
-    btn.click(
-        fn=generate_gradio_output, 
-        inputs=[amt_input, hr_input, night_input],
-        outputs=[json_output]
-    )
+        with gr.Column():
+            out_json = gr.JSON(label="Result")
+            out_text = gr.Textbox(label="Explanation")
 
-# Mount the Gradio app onto FastAPI
-app = gr.mount_gradio_app(app, demo, path="/")
+    btn.click(predict_fraud, inputs=[inp_amount, inp_hour, inp_email, inp_device, inp_round, inp_freq], outputs=[out_json, out_text])
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860)
