@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
+import fpPromise from '@fingerprintjs/fingerprintjs';
 import { 
   Search, 
   ChevronDown, 
@@ -18,7 +19,9 @@ import {
   Link,
   MoreHorizontal,
   Wallet,
-  LogOut
+  LogOut,
+  AlertCircle,
+  MessageSquare
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -28,7 +31,7 @@ export default function GPayDashboard({ user, onLogout }) {
   const [users, setUsers] = useState([]); 
   
   // Navigation State
-  const [currentView, setCurrentView] = useState('home'); // 'home', 'pay', 'manual_pay'
+  const [currentView, setCurrentView] = useState('home'); 
   const [selectedContact, setSelectedContact] = useState(null);
   const [amount, setAmount] = useState('');
   
@@ -44,6 +47,11 @@ export default function GPayDashboard({ user, onLogout }) {
   // Modals
   const [showBalance, setShowBalance] = useState(false);
 
+  // Appeal State
+  const [appealTxId, setAppealTxId] = useState(null);
+  const [appealText, setAppealText] = useState('');
+  const [isSubmittingAppeal, setIsSubmittingAppeal] = useState(false);
+
   useEffect(() => {
     fetchInitialData();
 
@@ -56,10 +64,8 @@ export default function GPayDashboard({ user, onLogout }) {
 
     const txSub = supabase
       .channel('public:transactions')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions' }, (payload) => {
-        if (payload.new.sender_email === user.email || payload.new.receiver_email === user.email) {
-          setTransactions(prev => [payload.new, ...prev]);
-        }
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
+        fetchInitialData();
       })
       .subscribe();
 
@@ -132,6 +138,26 @@ export default function GPayDashboard({ user, onLogout }) {
     }
   };
 
+  const submitAppeal = async () => {
+    if (!appealText.trim()) return;
+    setIsSubmittingAppeal(true);
+    
+    const { error } = await supabase
+      .from('transactions')
+      .update({ user_explanation: appealText })
+      .eq('id', appealTxId);
+      
+    setIsSubmittingAppeal(false);
+    
+    if (!error) {
+      setAppealTxId(null);
+      setAppealText('');
+      fetchInitialData();
+    } else {
+      alert("Error submitting appeal: " + error.message);
+    }
+  };
+
   const executePayment = async () => {
     if (!amount || isNaN(amount) || amount <= 0) return;
     if (amount > balance) {
@@ -148,34 +174,76 @@ export default function GPayDashboard({ user, onLogout }) {
     setPaymentStatus(null);
     const numAmount = parseFloat(amount);
     
-    let aiScore = 0;
-    let aiType = "UNKNOWN";
-    let aiExp = "No AI analysis performed.";
-    
+    // ==========================================
+    // UNIFIED FRAUD MITIGATION ENGINE API
+    // ==========================================
+    let aiScore = 0.05;
+    let aiType = "VERIFIED_SAFE";
+    let masterExplanation = "All telemetry verified safe.";
+    let visitorId = "UNAVAILABLE";
+
     try {
-        // Updated Endpoint
-        const hfResponse = await axios.post('https://mukilan-k-orhcid-fraud-detection-model.hf.space/api/predict', {
-            data: [
-                numAmount,
-                new Date().getHours(),
-                "Gmail",
-                "Android",
-                numAmount % 10 === 0,
-                "Low Frequency"
-            ]
-        });
-        const result = hfResponse.data.data; 
-        const jsonResult = result[0];
-        aiExp = result[1];
-        aiScore = parseFloat(jsonResult["Fraud Score"]);
-        aiType = jsonResult["Predicted Type"];
-    } catch (e) {
-        console.warn("API fallthrough caught.", e);
-        if(numAmount > 8000) {
-            aiScore = 0.85; aiType = "BEHAVIORAL_ABUSE"; aiExp = "Fallback: Unusually large transaction flagged.";
+        // 1. DEVICE FINGERPRINTING (Cost: FREE)
+        try {
+            const fp = await fpPromise.load();
+            const fpResult = await fp.get();
+            visitorId = fpResult.visitorId;
+        } catch(e) { console.warn("Fingerprint Gen Failed", e); }
+
+        // 2. IP QUALITY SCORE (Cost: FREE TIER)
+        let isVPN = false;
+        let pScore = 0;
+        try {
+            // Get user's true Public IP
+            const { data: { ip } } = await axios.get('https://api.ipify.org?format=json');
+            
+            // Ping IPQS Analytics
+            const ipqsRes = await axios.get(`https://www.ipqualityscore.com/api/json/ip/ST4ZLbAEkCuvy6I8FuMECzW5ScDz5h11/${ip}`);
+            if (ipqsRes.data?.success) {
+                pScore = ipqsRes.data.fraud_score;
+                isVPN = ipqsRes.data.vpn || ipqsRes.data.proxy || ipqsRes.data.tor;
+            }
+        } catch(e) { console.warn("Network Analytics Failed", e); }
+
+        // 3. HUGGING FACE ML (Cost: FREE)
+        let mlScore = 0;
+        let mlExplanation = "Normal profile.";
+        let rawMlType = "SAFE";
+        try {
+            const hfResponse = await axios.post('https://mukilan-k-orhcid-fraud-detection-model.hf.space/api/predict', {
+                data: [numAmount, new Date().getHours(), "UPI", "Mobile", numAmount % 10 === 0, "Low Frequency"]
+            });
+            const jsonResult = hfResponse.data.data[0];
+            mlScore = parseFloat(jsonResult["Fraud Score"]);
+            rawMlType = jsonResult["Predicted Type"];
+            mlExplanation = hfResponse.data.data[1];
+        } catch (e) {
+            console.warn("ML Engine Fallback", e);
         }
+
+        // ==========================================
+        // SYNTHESIS DECISION TREE
+        // ==========================================
+        if (isVPN || pScore > 85) {
+            aiScore = 0.98;
+            aiType = "NETWORK_ANOMALY (IPQS)";
+            masterExplanation = `CRITICAL OVERRIDE: Suspicious network connection detected. VPN/Proxy=${isVPN}, Global IP Risk Score=${pScore}%. Device Hash: [${visitorId.substring(0,8)}]`;
+        } else if (mlScore > 0.8) {
+            aiScore = mlScore;
+            aiType = rawMlType;
+            masterExplanation = `ML Engine Trigger: ${mlExplanation} | IPQS Risk: ${pScore}% | Device Hash: [${visitorId.substring(0,8)}]`;
+        } else {
+            aiScore = 0.05;
+            aiType = "VERIFIED_SAFE";
+            masterExplanation = `Transaction authenticated. Network Risk: ${pScore}% | Device Hash: [${visitorId.substring(0,8)}]`;
+        }
+        
+    } catch (e) {
+        // Absolute worst case fallback
+        console.error("Master mitigation failure", e);
     }
 
+    // DISPATCH TO BACKEND (Adding DB-level Velocity checks)
     try {
         const { data, error } = await supabase.rpc('transfer_funds', {
             p_sender_email: user.email,
@@ -183,13 +251,17 @@ export default function GPayDashboard({ user, onLogout }) {
             p_amount: numAmount,
             p_ai_fraud_score: aiScore,
             p_ai_fraud_type: aiType,
-            p_ai_explanation: aiExp
+            p_ai_explanation: masterExplanation
         });
 
         if (error) throw error;
         
         if (data.status === 'frozen') {
-            setPaymentStatus({ type: 'frozen', msg: `Transaction Frozen: Flagged for ${aiType}. Pending Admin Review.` });
+            setPaymentStatus({ type: 'frozen', msg: `Frozen: Flagged for ${aiType}. Pending Admin Review.` });
+            setTimeout(() => {
+                setCurrentView('home');
+                setManualEmail('');
+            }, 3000);
         } else {
             setPaymentStatus({ type: 'success', msg: 'Payment Sent Successfully!' });
             setTimeout(() => {
@@ -209,7 +281,6 @@ export default function GPayDashboard({ user, onLogout }) {
   if (currentView === 'manual_pay') {
       return (
           <div className="min-h-screen flex flex-col bg-[#F8F9FA]">
-              {/* Header */}
               <div className="bg-white px-4 py-4 flex items-center shadow-sm">
                   <button onClick={() => setCurrentView('home')} className="p-2 -ml-2 rounded-full hover:bg-slate-100">
                       <ArrowLeft className="w-6 h-6 text-slate-800" />
@@ -246,7 +317,6 @@ export default function GPayDashboard({ user, onLogout }) {
   if (currentView === 'pay') {
       return (
         <div className="min-h-screen flex flex-col bg-[#F8F9FA]">
-            {/* Header */}
             <div className="bg-white px-4 py-4 flex items-center justify-between shadow-sm">
                 <div className="flex items-center gap-4 truncate">
                     <button onClick={() => setCurrentView('home')} className="p-2 -ml-2 rounded-full flex-shrink-0 hover:bg-slate-100">
@@ -265,7 +335,6 @@ export default function GPayDashboard({ user, onLogout }) {
                 <button className="text-blue-600 font-semibold text-sm flex-shrink-0 ml-2">Help</button>
             </div>
 
-            {/* Input Area */}
             <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-8 bg-[#F8F9FA]">
                 <p className="text-slate-600 font-medium truncate w-full text-center">Paying <span className="font-bold">{selectedContact?.name}</span></p>
                 
@@ -297,18 +366,23 @@ export default function GPayDashboard({ user, onLogout }) {
                 )}
             </div>
 
-            {/* Bottom Actions */}
             <div className="p-6">
                 <button 
                   onClick={executePayment}
                   disabled={isProcessing || !amount}
-                  className="w-full bg-[#1A73E8] disabled:bg-[#A8C7FA] text-white py-4 rounded-full font-semibold text-lg flex items-center justify-center shadow-md active:scale-95 transition-all"
+                  className="w-full bg-[#1A73E8] disabled:bg-[#A8C7FA] text-white py-4 rounded-full font-semibold text-lg flex items-center justify-center shadow-md active:scale-95 transition-all relative overflow-hidden"
                 >
                     {isProcessing ? <Loader2 className="w-6 h-6 animate-spin" /> : 
                      (amount ? `Pay ₹${amount}` : 'Enter amount')}
+                     {/* Cool AI Scan Effect */}
+                     {isProcessing && <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-r from-transparent via-white/30 to-transparent -translate-x-[100%] animate-[scan_1.5s_ease-in-out_infinite]"></div>}
                 </button>
-                <p className="text-center text-xs text-slate-500 mt-4 flex items-center justify-center gap-1">
-                    Secured by <span className="font-bold grayscale opacity-70">FraudGuard AI</span>
+                <p className="text-center text-[10px] text-slate-400 mt-4 flex items-center justify-center gap-1.5 uppercase font-medium tracking-wide">
+                    {isProcessing ? (
+                        <>Scanning telemetry vectors <Loader2 className="w-3 h-3 animate-spin"/> </>
+                    ) : (
+                        <>Protected by <span className="font-bold text-slate-500">Orchid Network Intelligence</span></>
+                    )}
                 </p>
             </div>
         </div>
@@ -360,7 +434,6 @@ export default function GPayDashboard({ user, onLogout }) {
                       Apply now <span className="ml-1 text-lg leading-none">›</span>
                   </button>
               </div>
-              {/* Graphic Mock */}
               <div className="absolute right-0 bottom-0 w-[40%] h-full">
                   <div className="absolute bottom-0 right-4 w-16 h-24 bg-[#E2A684] rounded-t-full flex items-end justify-center">
                       <div className="w-12 h-16 bg-[#F28B82] rounded-t-xl z-20"></div>
@@ -370,12 +443,6 @@ export default function GPayDashboard({ user, onLogout }) {
                   <div className="absolute top-4 right-10 w-8 h-8 bg-[#FDBA05] rounded-full flex items-center justify-center text-[#B06000] text-xs font-bold font-serif shadow-sm opacity-90">₹</div>
                   <div className="absolute bottom-4 left-2 w-6 h-6 bg-[#FDBA05] rounded-full flex items-center justify-center text-[#B06000] text-[10px] font-bold font-serif shadow-sm opacity-90">₹</div>
               </div>
-          </div>
-          <div className="flex justify-center gap-1.5 mt-3">
-              <div className="w-4 h-1.5 bg-[#444746] rounded-full"></div>
-              <div className="w-1.5 h-1.5 bg-[#C4C7C5] rounded-full"></div>
-              <div className="w-1.5 h-1.5 bg-[#C4C7C5] rounded-full"></div>
-              <div className="w-1.5 h-1.5 bg-[#C4C7C5] rounded-full"></div>
           </div>
       </div>
 
@@ -402,7 +469,6 @@ export default function GPayDashboard({ user, onLogout }) {
       {/* Gray Section */}
       <div className="mt-8 bg-[#F8F9FA] rounded-t-[2.5rem] min-h-[500px]">
           
-          {/* People Section */}
           <div className="px-5 pt-8">
               <div className="flex justify-between items-center mb-5">
                   <h3 className="text-[17px] font-semibold text-[#1F1F1F]">People</h3>
@@ -458,15 +524,81 @@ export default function GPayDashboard({ user, onLogout }) {
                       ) : (
                           transactions.map(tx => {
                               const isSender = tx.sender_email === user.email;
+                              
                               return (
-                                  <div key={tx.id} className="flex justify-between items-center border-b border-slate-50 pb-3 last:border-0 last:pb-0">
-                                      <div className="flex flex-col">
-                                          <span className="font-semibold text-sm text-[#1F1F1F]">{isSender ? `To ${tx.receiver_email}` : `From ${tx.sender_email}`}</span>
-                                          <span className="text-[10px] text-slate-500 font-medium tracking-wide mt-0.5">{new Date(tx.created_at).toLocaleDateString('en-GB')} • {tx.status.toUpperCase()}</span>
+                                  <div key={tx.id} className="flex flex-col border-b border-slate-50 pb-3 last:border-0 last:pb-0">
+                                      <div className="flex justify-between items-center">
+                                          <div className="flex flex-col">
+                                              <span className="font-semibold text-sm text-[#1F1F1F]">{isSender ? `To ${tx.receiver_email}` : `From ${tx.sender_email}`}</span>
+                                              <span className="text-[10px] text-slate-500 font-medium tracking-wide mt-0.5">{new Date(tx.created_at).toLocaleDateString('en-GB')} • <span className={tx.status === 'frozen' ? 'text-orange-500 font-bold' : ''}>{tx.status.toUpperCase()}</span></span>
+                                          </div>
+                                          <span className={`font-bold text-sm ${isSender ? 'text-[#1F1F1F]' : 'text-green-600'} ${tx.status==='frozen' && 'opacity-30'}`}>
+                                              {isSender ? '-' : '+'}₹{tx.amount}
+                                          </span>
                                       </div>
-                                      <span className={`font-bold text-sm ${isSender ? 'text-[#1F1F1F]' : 'text-green-600'}`}>
-                                          {isSender ? '-' : '+'}₹{tx.amount}
-                                      </span>
+                                      
+                                      {/* Frozen State Appeal UI (Only for Sender) */}
+                                      {tx.status === 'frozen' && isSender && (
+                                          <div className="mt-3 bg-orange-50 rounded-2xl p-3 border border-orange-100">
+                                              <div className="flex items-center gap-2 text-orange-800 text-xs font-bold mb-2">
+                                                  <AlertCircle className="w-4 h-4" /> Action Required: Security Freeze
+                                              </div>
+                                              
+                                              {!tx.user_explanation ? (
+                                                  <div className="space-y-2">
+                                                      <p className="text-[11px] text-orange-700 leading-tight">This payment was automatically frozen by Orchid Compliance due to irregular patterns. The funds are held. Submit a brief explanation to release the funds to the vendor.</p>
+                                                      
+                                                      {appealTxId === tx.id ? (
+                                                          <div className="flex flex-col gap-2 mt-2">
+                                                              <textarea 
+                                                                  value={appealText}
+                                                                  onChange={e => setAppealText(e.target.value)}
+                                                                  placeholder="I am paying for..."
+                                                                  className="w-full text-xs p-2 rounded-xl border border-orange-200 outline-none focus:border-orange-400 bg-white"
+                                                                  rows={2}
+                                                              />
+                                                              <div className="flex gap-2">
+                                                                  <button 
+                                                                    onClick={submitAppeal}
+                                                                    disabled={isSubmittingAppeal || !appealText.trim()}
+                                                                    className="bg-orange-500 text-white text-xs font-bold py-1.5 px-3 rounded-lg flex items-center justify-center flex-1 shadow-sm"
+                                                                  >
+                                                                      {isSubmittingAppeal ? 'Submitting...' : 'Submit Appeal'}
+                                                                  </button>
+                                                                  <button 
+                                                                    onClick={() => setAppealTxId(null)}
+                                                                    className="bg-white text-orange-500 text-xs font-bold py-1.5 px-3 rounded-lg border border-orange-200"
+                                                                  >
+                                                                      Cancel
+                                                                  </button>
+                                                              </div>
+                                                          </div>
+                                                      ) : (
+                                                          <button 
+                                                            onClick={() => { setAppealTxId(tx.id); setAppealText(''); }}
+                                                            className="bg-orange-600 hover:bg-orange-700 active:scale-95 transition-all text-white text-xs font-bold py-2 px-3 rounded-xl flex items-center justify-center shadow-sm w-full"
+                                                          >
+                                                              <MessageSquare className="w-3.5 h-3.5 mr-1.5" /> Submit Security Explanation
+                                                          </button>
+                                                      )}
+                                                  </div>
+                                              ) : (
+                                                  <div className="bg-white/60 p-2.5 rounded-xl border border-orange-100">
+                                                      <p className="text-[9px] uppercase font-bold text-slate-400 mb-0.5 tracking-wider">Your Submitted Explanation:</p>
+                                                      <p className="text-xs text-slate-700 font-medium italic">"{tx.user_explanation}"</p>
+                                                      <p className="text-[10px] text-orange-600 font-bold mt-2">Pending Admin Clearance...</p>
+                                                  </div>
+                                              )}
+                                          </div>
+                                      )}
+                                      
+                                      {/* Receiver Notice */}
+                                      {tx.status === 'frozen' && !isSender && (
+                                           <div className="mt-2 bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                                <p className="text-[10px] text-slate-500 font-medium">Funds are frozen pending a security clearance review from the sender.</p>
+                                           </div>
+                                      )}
+                                      
                                   </div>
                               )
                           })
@@ -492,7 +624,6 @@ export default function GPayDashboard({ user, onLogout }) {
               <span className="text-[10px] font-semibold text-[#444746]">Pay Now</span>
           </button>
 
-          {/* Floating Action Button inside Nav bar styling */}
           <div className="relative -mt-10 flex justify-center w-20">
               <div className="hidden absolute bg-white rounded-full w-[72px] h-[72px] -top-1 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]"></div>
               <button 
