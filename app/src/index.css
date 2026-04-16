@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    @apply bg-slate-100 text-slate-900 font-sans antialiased overflow-x-hidden;
+    -webkit-tap-highlight-color: transparent; /* Makes mobile tap targets smooth */
+  }
+}
+
+/* Hide scrollbars for slick mobile UI */
+::-webkit-scrollbar {
+  display: none;
+}
+* {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
