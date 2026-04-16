@@ -226,7 +226,7 @@ Respond strictly in this formatting:
 {"fraud_score": (float between 0.0 and 1.0, where > 0.8 is guaranteed frozen), "predicted_type": "(Choose ONE: SAFE, BEHAVIORAL_ABUSE, NETWORK_ANOMALY, UNUSUAL_AMOUNT, OR LAUNDERING)", "explanation": "(Write a very strict, 1-2 sentence professional explanation diagnosing exactly what triggered the score or why it's safe. Address the admin directly.)"}`;
 
             const geminiResponse = await axios.post(
-                \`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=\${import.meta.env.VITE_GEMINI_API_KEY}\`,
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
                 { contents: [{ parts: [{ text: prompt }] }] },
                 { headers: { 'Content-Type': 'application/json' } }
             );
