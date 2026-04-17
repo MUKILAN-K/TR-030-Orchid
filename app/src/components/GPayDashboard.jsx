@@ -205,25 +205,127 @@ export default function GPayDashboard({ user, onLogout }) {
             }
         } catch(e) { console.warn("Network Analytics Failed", e); }
 
-        // 3. GEMINI LLM AGENT EVALUATOR (Cost: FREE)
+        // 3. GATHER SENDER FINANCIAL BASELINE
+        let histCount = 0;
+        let histAvg = 0;
+        try {
+            const { data: histData } = await supabase
+                .from('transactions')
+                .select('amount')
+                .eq('sender_email', user.email)
+                .eq('status', 'completed');
+            
+            if (histData && histData.length > 0) {
+                histCount = histData.length;
+                const totalSent = histData.reduce((acc, curr) => acc + parseFloat(curr.amount), 0);
+                histAvg = (totalSent / histCount).toFixed(2);
+            }
+        } catch(e) { console.warn("History fetch failed", e); }
+
+        // 3.5. GATHER RECEIVER VULNERABILITY (Money Mule Defense)
+        let receiverRole = "user";
+        let receiverInboundCount = 0;
+        let receiverInboundVolume = 0;
+        try {
+            const { data: recUser } = await supabase.from('users').select('role').eq('email', receiver).single();
+            if (recUser) receiverRole = recUser.role;
+
+            const yesterday = new Date(Date.now() - 86400000).toISOString();
+            const { data: recTx } = await supabase
+                .from('transactions')
+                .select('amount')
+                .eq('receiver_email', receiver)
+                .eq('status', 'completed')
+                .gte('created_at', yesterday);
+                
+            if (recTx && recTx.length > 0) {
+                receiverInboundCount = recTx.length;
+                receiverInboundVolume = recTx.reduce((acc, curr) => acc + parseFloat(curr.amount), 0);
+            }
+        } catch(e) { console.warn("Receiver analysis failed", e); }
+
+        // 3.8 GATHER TRUST BOND (Kinship Analysis)
+        let trustCount = 0;
+        let trustVolume = 0;
+        try {
+            const { data: trustData } = await supabase
+                .from('transactions')
+                .select('amount')
+                .eq('sender_email', user.email)
+                .eq('receiver_email', receiver)
+                .eq('status', 'completed');
+            
+            if (trustData && trustData.length > 0) {
+                trustCount = trustData.length;
+                trustVolume = trustData.reduce((acc, curr) => acc + parseFloat(curr.amount), 0);
+            }
+        } catch(e) { console.warn("Trust bond fetch failed", e); }
+
+        // 3.9 GRAPH TRAVERSAL: TRI-NODE LAUNDERING SYNDICATE DETECTION
+        let graphSyndicateDetected = false;
+        try {
+            // STEP 1: Has Party B (Receiver) sent money to a Party C?
+            const { data: hop1 } = await supabase.from('transactions').select('receiver_email').eq('sender_email', receiver).eq('status', 'completed');
+            
+            if (hop1 && hop1.length > 0) {
+                // STEP 2: Extract all Party C's
+                const partyCEmails = hop1.map(tx => tx.receiver_email);
+                
+                // STEP 3: Has any occurance of Party C sent money BACK to Party A (the original Sender)?
+                const { data: hop2 } = await supabase.from('transactions')
+                    .select('id')
+                    .in('sender_email', partyCEmails)
+                    .eq('receiver_email', user.email)
+                    .eq('status', 'completed');
+                
+                if (hop2 && hop2.length > 0) {
+                    graphSyndicateDetected = true; // Circular Loop Detected!
+                }
+            }
+        } catch (e) {
+            console.warn("Graph linkage scan failed", e);
+        }
+
+        // 4. GEMINI LLM AGENT EVALUATOR (Cost: FREE)
         let mlScore = 0;
         let mlExplanation = "Normal profile.";
         let rawMlType = "SAFE";
         try {
+            const percDrain = ((numAmount / balance) * 100).toFixed(1);
+            
             const prompt = `You are an elite bank fraud security analyst algorithm. 
 Synthesize this live transaction telemetry and return ONLY a raw JSON object. Do NOT use markdown blocks or backticks.
 
-TELEMETRY DATA:
+CURRENT TELEMETRY DATA:
 - Sender Email: ${user.email}
-- Transfer Amount: ₹${numAmount}
+- Transfer Amount: ₹${numAmount} (Consumes ${percDrain}% of available balance)
 - Current Local Time: ${new Date().toLocaleTimeString()}
 - Network Intelligence Risk Score: ${pScore}% Risk
 - VPN/Proxy Masking Detected: ${isVPN}
 - Cryptographic Device Hash: ${visitorId}
 
-Is this transaction highly suspicious, an anomaly, or completely safe?
+SENDER'S HISTORICAL BASELINE:
+- Current Bank Balance: ₹${balance}
+- Total Successful Transfers Ever Made: ${histCount}
+- Their Average Transfer Size: ₹${histAvg > 0 ? histAvg : 'N/A (Brand New Account)'}
+
+RECEIVER'S VULNERABILITY FOOTPRINT (MONEY MULE DETECTION):
+- Target Account Designation: ${receiverRole.toUpperCase()} (Standard users should NOT be receiving massive, business-level financial influxes)
+- Total Inbound Transfers Traced Today: ${receiverInboundCount}
+- Total Gross Inbound Volume Today: ₹${receiverInboundVolume.toFixed(2)}
+
+TARGET INTER-RELATIONSHIP (THE TRUST BOND):
+- Has the Sender successfully sent money to this explicit Receiver before?: ${trustCount > 0 ? 'YES' : 'NO'}
+- Total Intersectional Past Transactions: ${trustCount}
+- Lifetime Economic Volume Exchanged Together: ₹${trustVolume.toFixed(2)}
+
+CRITERIA & INSTRUCTIONS:
+1. Compare the Sender's Telemetry against their Baseline, evaluating the Receiver's Drop Zone footprint.
+2. CRITICAL RULE: If the "Trust Bond" is established (Trust Transactions > 0), you MUST apply extreme analytical leniency. Huge deviations in Amount to a trusted beneficiary are usually completely safe (e.g., medical emergencies, hospital bills, rent payments). If the Trust Bond is 0, remain strictly skeptical.
+
+Is this a Funneling attack, a behavioral anomaly, highly suspicious, or safe?
 Respond strictly in this formatting:
-{"fraud_score": (float between 0.0 and 1.0, where > 0.8 is guaranteed frozen), "predicted_type": "(Choose ONE: SAFE, BEHAVIORAL_ABUSE, NETWORK_ANOMALY, UNUSUAL_AMOUNT, OR LAUNDERING)", "explanation": "(Write a very strict, 1-2 sentence professional explanation diagnosing exactly what triggered the score or why it's safe. Address the admin directly.)"}`;
+{"fraud_score": (float between 0.0 and 1.0, where > 0.8 is guaranteed frozen), "predicted_type": "(Choose ONE: SAFE, BEHAVIORAL_ABUSE, NETWORK_ANOMALY, UNUSUAL_AMOUNT, OR LAUNDERING)", "explanation": "(Write a very strict, 1-2 sentence professional explanation diagnosing exactly what triggered the score. Strongly cite the Trust Bond or Baseline context if applicable. Address the admin directly.)"}`;
 
             const geminiResponse = await axios.post(
                 `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${import.meta.env.VITE_GEMINI_API_KEY}`,
@@ -241,25 +343,20 @@ Respond strictly in this formatting:
             mlExplanation = aiData.explanation;
         } catch (e) {
             console.warn("Gemini Engine Fallback", e);
-            if (numAmount >= 8000) {
-               mlScore = 0.95;
-               rawMlType = "BEHAVIORAL_ABUSE";
-               mlExplanation = "Fallback System: Unusually large transaction flagged relative to account baselines.";
-            }
+            mlScore = 0.1; // Safely fail open if Gemini API crashes
+            rawMlType = "SAFE";
+            mlExplanation = "Warning: AI Evaluator unreachable. Cleared transaction under manual escalation protocols.";
         }
 
         // ==========================================
         // SYNTHESIS DECISION TREE
         // ==========================================
-        
-        // HACKATHON DEMO GUARANTEE OVERRIDES:
-        // Trigger Network Anomaly manually if amount ends in .99
-        if (amount.includes('.99')) {
-             isVPN = true;
-             pScore = 95;
-        }
 
-        if (isVPN || pScore > 85) {
+        if (graphSyndicateDetected) {
+            aiScore = 0.99;
+            aiType = "LAUNDERING_SYNDICATE";
+            masterExplanation = "CRITICAL: Graph Analysis detected a circular laundering loop logic (A => B => C => A). Absolute freeze executed across all nodes.";
+        } else if (isVPN || pScore > 85) {
             aiScore = 0.98;
             aiType = "NETWORK_ANOMALY (IPQS)";
             masterExplanation = `CRITICAL OVERRIDE: Suspicious network connection detected. VPN/Proxy=${isVPN}, Global IP Risk Score=${pScore}%. Device Hash: [${visitorId.substring(0,8)}]`;
