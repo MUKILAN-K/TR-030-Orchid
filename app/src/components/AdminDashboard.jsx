@@ -16,7 +16,8 @@ import {
     Activity,
     BarChart3,
     PieChart,
-    Zap
+    Zap,
+    Download
 } from 'lucide-react';
 
 export default function AdminDashboard({ onLogout }) {
@@ -111,6 +112,98 @@ export default function AdminDashboard({ onLogout }) {
         await supabase.rpc('decrement_balance', { p_email: tx.sender_email, p_amount: tx.amount });
         await supabase.rpc('increment_balance', { p_email: tx.receiver_email, p_amount: tx.amount });
     }
+  };
+
+  const handleExportComplianceReport = (tx) => {
+    const reportHtml = `
+      <html>
+        <head>
+          <title>Orchid Security - Compliance Report</title>
+          <style>
+            body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; padding: 40px; margin: 0; }
+            .header { border-bottom: 2px solid #1a202c; padding-bottom: 20px; margin-bottom: 30px; }
+            .logo { font-size: 24px; font-weight: 900; color: #1a202c; letter-spacing: 2px; text-transform: uppercase; }
+            .subtitle { font-size: 14px; color: #718096; margin-top: 5px; }
+            .grid { display: flex; justify-content: space-between; margin-bottom: 30px; gap: 20px; }
+            .card { background: #f7fafc; padding: 20px; border-radius: 8px; flex: 1; border: 1px solid #e2e8f0; }
+            .label { font-size: 11px; color: #a0aec0; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; font-weight: bold; }
+            .value { font-size: 18px; color: #2d3748; font-weight: bold; }
+            .fraud-score { font-size: 28px; font-weight: 900; color: #e53e3e; }
+            .section { margin-bottom: 30px; }
+            .section-title { font-size: 16px; font-weight: bold; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px; margin-bottom: 15px; }
+            .log-box { background: #fff5f5; border-left: 4px solid #fc8181; padding: 15px; font-size: 14px; line-height: 1.6; color: #742a2a; }
+            .footer { margin-top: 50px; font-size: 10px; color: #cbd5e0; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 20px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="logo">[ORCHID] Intelligence Metrics</div>
+            <div class="subtitle">Automated Fraud Compliance & Threat Analysis Report</div>
+            <div class="subtitle" style="text-align: right; margin-top: -20px;">Generated: ${new Date().toLocaleString()}</div>
+          </div>
+          
+          <div class="grid">
+            <div class="card">
+              <div class="label">Transaction ID</div>
+              <div class="value" style="font-size: 14px;">${tx.id}</div>
+              <br>
+              <div class="label">Date & Time</div>
+              <div class="value" style="font-size: 14px;">${new Date(tx.created_at).toLocaleString()}</div>
+            </div>
+            <div class="card" style="border-color: #fc8181; background: #fff5f5;">
+               <div class="label" style="color: #c53030;">Orchid Threat Score</div>
+               <div class="fraud-score">${Number(tx.ai_fraud_score).toFixed(2)}</div>
+               <div class="label" style="margin-top: 5px; color: #e53e3e;">Classification: ${tx.ai_fraud_type?.replace('_', ' ')}</div>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="card">
+               <div class="label">Sender Profile</div>
+               <div class="value">${tx.sender?.name || 'Unknown'}</div>
+               <div style="font-size: 12px; color: #718096; margin-top: 5px;">${tx.sender_email}</div>
+            </div>
+            <div class="card">
+               <div class="label">Receiver Profile</div>
+               <div class="value">${tx.receiver?.name || 'Unknown'}</div>
+               <div style="font-size: 12px; color: #718096; margin-top: 5px;">${tx.receiver_email}</div>
+            </div>
+            <div class="card">
+               <div class="label">Transferred Amount</div>
+               <div class="value" style="font-size: 24px;">₹${tx.amount}</div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Context-Aware AI Synthesized Log</div>
+            <div class="log-box">
+              ${tx.ai_explanation}
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">User Appeal Transcript</div>
+            <div class="log-box" style="background: #ebf8ff; border-left-color: #63b3ed; color: #2c5282;">
+              ${tx.user_explanation ? tx.user_explanation : 'No appeal provided by the user. Funds remain seized.'}
+            </div>
+          </div>
+
+          <div class="footer">
+            Report generated autonomously by Google Gemini 2.0 Flash via Orchid Network Security.<br>
+            CONFIDENTIAL: This document contains strictly confidential cryptographic hashing telemetry.
+          </div>
+        </body>
+      </html>
+    `;
+
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(reportHtml);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+    }, 250);
   };
 
 
@@ -244,15 +337,22 @@ export default function AdminDashboard({ onLogout }) {
                                     <button 
                                         onClick={() => handleDecision(tx.id, 'approve')}
                                         disabled={!tx.user_explanation}
-                                        className="flex-1 bg-[#1A73E8] hover:bg-[#1557b0] disabled:bg-[#A8C7FA] disabled:cursor-not-allowed text-white py-4 rounded-xl font-bold text-sm flex items-center justify-center transition-colors shadow-md shadow-blue-500/20"
+                                        className="flex-1 bg-[#1A73E8] hover:bg-[#1557b0] disabled:bg-[#A8C7FA] disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-xs flex items-center justify-center transition-colors shadow-sm"
                                     >
-                                        <CheckCircle2 className="w-5 h-5 mr-2" /> Release Funds
+                                        <CheckCircle2 className="w-4 h-4 mr-1.5" /> Release
                                     </button>
                                     <button 
                                         onClick={() => handleDecision(tx.id, 'reject')}
-                                        className="flex-1 bg-white hover:bg-red-50 text-red-600 border border-slate-200 hover:border-red-200 py-4 rounded-xl font-bold text-sm flex items-center justify-center transition-colors"
+                                        className="flex-1 bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl font-bold text-xs flex items-center justify-center transition-colors"
                                     >
-                                        <XCircle className="w-5 h-5 mr-2" /> Block Permanently
+                                        <XCircle className="w-4 h-4 mr-1.5" /> Block
+                                    </button>
+                                    <button 
+                                        onClick={() => handleExportComplianceReport(tx)}
+                                        className="px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-bold flex items-center justify-center transition-colors"
+                                        title="Export Compliance Report as PDF"
+                                    >
+                                        <Download className="w-4 h-4" />
                                     </button>
                                 </div>
                             </div>

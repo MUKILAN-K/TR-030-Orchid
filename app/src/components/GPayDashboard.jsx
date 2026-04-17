@@ -21,7 +21,8 @@ import {
   Wallet,
   LogOut,
   AlertCircle,
-  MessageSquare
+  MessageSquare,
+  Download
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -408,6 +409,56 @@ Respond strictly in this formatting:
     }
   };
 
+  // ---------------- PDF RECEIPT GENERATOR ----------------
+
+  const handleDownloadReceipt = (tx) => {
+    const isSender = tx.sender_email === user.email;
+    const statusColor = tx.status === 'frozen' ? '#f97316' : tx.status === 'blocked' ? '#ef4444' : '#22c55e';
+    const statusLabel = tx.status === 'frozen' ? '🔒 FROZEN — Pending Compliance Review' : tx.status === 'blocked' ? '🚫 BLOCKED — Flagged by Security Engine' : '✅ COMPLETED';
+    const html = `
+      <html>
+        <head>
+          <title>Orchid Pay — Transaction Receipt</title>
+          <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #f8f9fa; padding: 40px; color: #1f1f1f; }
+            .card { background: white; max-width: 480px; margin: 0 auto; border-radius: 24px; padding: 36px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+            .logo { font-size: 13px; font-weight: 900; letter-spacing: 3px; text-transform: uppercase; color: #1a73e8; margin-bottom: 24px; }
+            .amount { font-size: 48px; font-weight: 900; color: #1f1f1f; text-align: center; margin: 24px 0; }
+            .status-badge { display: inline-block; padding: 8px 18px; border-radius: 99px; font-size: 12px; font-weight: 700; color: white; background: ${statusColor}; text-align: center; width: 100%; margin-bottom: 28px; }
+            .row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
+            .row:last-child { border-bottom: none; }
+            .label { color: #94a3b8; font-weight: 600; }
+            .value { color: #1f1f1f; font-weight: 700; text-align: right; max-width: 60%; word-break: break-all; }
+            .alert-box { margin-top: 24px; background: #fff7ed; border-left: 4px solid #f97316; padding: 14px 16px; border-radius: 12px; font-size: 12px; color: #7c2d12; line-height: 1.6; }
+            .footer { margin-top: 28px; text-align: center; font-size: 10px; color: #cbd5e0; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="logo">⬡ Orchid Pay · Compliance Receipt</div>
+            <div class="amount">₹${tx.amount}</div>
+            <div class="status-badge">${statusLabel}</div>
+            <div class="row"><span class="label">Transaction ID</span><span class="value" style="font-size:10px">${tx.id}</span></div>
+            <div class="row"><span class="label">Date & Time</span><span class="value">${new Date(tx.created_at).toLocaleString()}</span></div>
+            <div class="row"><span class="label">${isSender ? 'Sent To' : 'Received From'}</span><span class="value">${isSender ? tx.receiver_email : tx.sender_email}</span></div>
+            <div class="row"><span class="label">Direction</span><span class="value">${isSender ? 'DEBIT' : 'CREDIT'}</span></div>
+            ${tx.ai_fraud_score ? `<div class="row"><span class="label">Orchid Risk Score</span><span class="value" style="color:${statusColor}">${Number(tx.ai_fraud_score).toFixed(2)} / 1.00</span></div>` : ''}
+            ${tx.ai_fraud_type ? `<div class="row"><span class="label">Classification</span><span class="value">${tx.ai_fraud_type.replace(/_/g, ' ')}</span></div>` : ''}
+            ${tx.ai_explanation ? `<div class="alert-box"><strong>Security Engine Log:</strong><br/>${tx.ai_explanation}</div>` : ''}
+            ${tx.user_explanation ? `<div class="alert-box" style="background:#eff6ff; border-color:#3b82f6; color:#1e3a5f"><strong>Your Submitted Appeal:</strong><br/>${tx.user_explanation}</div>` : ''}
+            <div class="footer">This is an official Orchid Network Intelligence compliance receipt.<br/>Keep this document as proof of the transaction attempt.</div>
+          </div>
+        </body>
+      </html>
+    `;
+    const win = window.open('', '_blank');
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); win.close(); }, 250);
+  };
+
   // ---------------- UI RENDERERS ----------------
 
   if (currentView === 'manual_pay') {
@@ -664,9 +715,18 @@ Respond strictly in this formatting:
                                               <span className="font-semibold text-sm text-[#1F1F1F]">{isSender ? `To ${tx.receiver_email}` : `From ${tx.sender_email}`}</span>
                                               <span className="text-[10px] text-slate-500 font-medium tracking-wide mt-0.5">{new Date(tx.created_at).toLocaleDateString('en-GB')} • <span className={tx.status === 'frozen' ? 'text-orange-500 font-bold' : ''}>{tx.status.toUpperCase()}</span></span>
                                           </div>
-                                          <span className={`font-bold text-sm ${isSender ? 'text-[#1F1F1F]' : 'text-green-600'} ${tx.status==='frozen' && 'opacity-30'}`}>
-                                              {isSender ? '-' : '+'}₹{tx.amount}
-                                          </span>
+                                          <div className="flex items-center gap-2">
+                                              <span className={`font-bold text-sm ${isSender ? 'text-[#1F1F1F]' : 'text-green-600'} ${tx.status==='frozen' && 'opacity-30'}`}>
+                                                  {isSender ? '-' : '+'}₹{tx.amount}
+                                              </span>
+                                              <button
+                                                  onClick={() => handleDownloadReceipt(tx)}
+                                                  title="Download PDF Receipt"
+                                                  className="p-1.5 rounded-full hover:bg-slate-100 active:scale-95 transition-all"
+                                              >
+                                                  <Download className="w-3.5 h-3.5 text-slate-400" />
+                                              </button>
+                                          </div>
                                       </div>
                                       
                                       {/* Frozen State Appeal UI (Only for Sender) */}
